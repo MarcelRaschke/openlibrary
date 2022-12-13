@@ -383,7 +383,7 @@ div.superNav {
 span {
   &.link {
     font-size: 12px;
-    color: @light-grey;
+    color: @darker-grey;
     font-weight: normal !important;
     font-family: @lucida_sans_serif-2;
     white-space: nowrap;
@@ -393,6 +393,11 @@ span {
     color: @dark-grey;
     font-weight: normal !important;
     font-family: @lucida_sans_serif-2;
+
+    &.sorter {
+      margin-right: 5px;
+      margin-left: 10px;
+    }
 
     span.label {
       background-color: @orange;
@@ -1082,6 +1087,7 @@ div.editThis {
 
 div#searchResults,
 div#searchResults ul {
+  min-width: 0;
   flex: 1;
   margin-left: 0;
   margin-bottom: 0;
@@ -1190,6 +1196,10 @@ div#searchResults {
     max-width: 800px;
     font-size: 1em;
     color: @grey;
+  }
+  .cover {
+    max-width: 120px;
+    border-radius: 4px;
   }
 }
 
@@ -1801,9 +1811,9 @@ div.addfield {
 // Merge button
 //openlibrary/templates/search/authors.html
 div.mergeThis {
-  float: right;
-  margin: 20px 20px 0 30px;
-  padding-left: 47px;
+  display: inline;
+  padding: 15px 0 0 45px;
+  margin-left: 15px;
   background: url(/images/icons/icon_merge.png) no-repeat 0 0;
 }
 @import (less) "components/merge-form.less";
@@ -1954,32 +1964,6 @@ div#subjectLists {
 .list-books {
   .book {
     .display-flex();
-  }
-}
-
-// openlibrary/macros/ReadingLogButton.html
-// openlibrary/plugins/openlibrary/js/ol.js
-.reading-log-lite {
-  .display-flex();
-  padding-bottom: 5px;
-  margin-bottom: 5px;
-
-  select {
-    background-color: @white;
-    color: @dark-grey;
-    border: 1px solid @mid-grey;
-    border-radius: 4px;
-    height: 2.5em;
-    width: 100%;
-  }
-  button {
-    border-radius: 4px;
-    color: @white;
-    background: @green-three;
-    border: 2px solid @green-four;
-    border-right: 1px solid @green-two;
-    height: 2.5em;
-    padding: 0 10px;
   }
 }
 

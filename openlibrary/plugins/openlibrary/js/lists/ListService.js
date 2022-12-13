@@ -47,7 +47,7 @@ export function createList(userKey, data, success) {
  *
  * Executes given callback on success.
  * @param {string} listKey The list's key.
- * @param {string|object} seed The item being added to the list.
+ * @param {string|{ key: string }} seed The item being added to the list.
  * @param {function} success Callback to be executed on successful POST.
  */
 export function addToList(listKey, seed, success) {
@@ -63,7 +63,7 @@ export function addToList(listKey, seed, success) {
  *
  * Executes given callback on success.
  * @param {string} listKey The list's key.
- * @param {string|object} seed The item being removed from the list.
+ * @param {string|{ key: string }} seed The item being removed from the list.
  * @param {function} success Callback to be executed on successful POST.
  */
 export function removeFromList(listKey, seed, success) {
@@ -89,6 +89,20 @@ export function updateReadingLog(formElem, success) {
         data: formData,
         processData: false,
         contentType: false,
+        success: success
+    })
+}
+
+/**
+ * Fetches HTML for list components
+ *
+ * @param {string} key Key of record that can be added/removed to the list
+ * @param {function} success Callback to be executed on fetch success
+ */
+export function fetchPartials(key, success) {
+    $.ajax({
+        type: 'GET',
+        url: `/lists/partials?key=${key}`,
         success: success
     })
 }

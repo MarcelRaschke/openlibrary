@@ -1,14 +1,16 @@
 """Merge authors.
 """
 import re
-
 import json
-import six
 import web
+
+from typing import Any
 
 from infogami.infobase.client import ClientException
 from infogami.utils import delegate
 from infogami.utils.view import render_template, safeint
+from openlibrary.accounts import get_current_user
+from openlibrary.plugins.upstream.edits import process_merge_request
 from openlibrary.plugins.worksearch.code import top_books_from_author
 from openlibrary.utils import uniq, dicthash
 
@@ -19,12 +21,7 @@ class BasicRedirectEngine:
     to the newly identified canonical record.
     """
 
-    def make_redirects(self, master, duplicates):
-        """
-        :param str master:
-        :param list of str duplicates:
-        :rtype: list of dict
-        """
+    def make_redirects(self, master: str, duplicates: list[str]) -> list[dict]:
         # Create the actual redirect objects
         docs_to_save = [make_redirect_doc(key, master) for key in duplicates]
 
@@ -49,14 +46,9 @@ class BasicRedirectEngine:
         refs = {ref for key in keys for ref in self.find_references(key)}
         return list(refs)
 
-    def update_references(self, doc, master, duplicates):
+    def update_references(self, doc: Any, master: str, duplicates: list[str]) -> Any:
         """
         Converts references to any of the duplicates in the given doc to the master.
-
-        :param doc:
-        :param str master:
-        :param list of str duplicates:
-        :rtype: Any
         """
         if isinstance(doc, dict):
             if list(doc) == ['key']:
@@ -88,12 +80,11 @@ class BasicMergeEngine:
         docs = self.do_merge(master, duplicates)
         return self.save(docs, master, duplicates)
 
-    def do_merge(self, master, duplicates):
+    def do_merge(self, master: str, duplicates: list[str]) -> list:
         """
         Performs the merge and returns the list of docs to save.
         :param str master: key of master doc
         :param list of str duplicates: keys of duplicates
-        :rtype: dict
         :return: Document to save
         """
         docs_to_save = []
@@ -211,10 +202,9 @@ def name_eq(n1, n2):
     return space_squash_and_strip(n1) == space_squash_and_strip(n2)
 
 
-def fix_table_of_contents(table_of_contents):
+def fix_table_of_contents(table_of_contents: list[str | dict]) -> list:
     """
     Some books have bad table_of_contents--convert them in to correct format.
-    :param typing.List[typing.Union[str, dict]] table_of_contents:
     """
 
     def row(r):
@@ -240,12 +230,7 @@ def fix_table_of_contents(table_of_contents):
     return [row for row in map(row, table_of_contents) if any(row.values())]
 
 
-def get_many(keys):
-    """
-    :param list of str keys:
-    :rtype: list of dict
-    """
-
+def get_many(keys: list[str]) -> list[dict]:
     def process(doc):
         # some books have bad table_of_contents. Fix them to avoid failure on save.
         if doc['type']['key'] == "/type/edition" and 'table_of_contents' in doc:
@@ -272,19 +257,36 @@ class merge_authors(delegate.page):
         return [k for k in keys if d.get("/authors/" + k) == '/type/author']
 
     def GET(self):
-        i = web.input(key=[])
+        i = web.input(key=[], mrid=None)
         keys = uniq(i.key)
 
         # filter bad keys
         keys = self.filter_authors(keys)
+
+        user = get_current_user()
+        can_merge = user and (
+            user.is_admin() or user.is_usergroup_member('/usergroup/super-librarians')
+        )
         return render_template(
-            'merge/authors', keys, top_books_from_author=top_books_from_author
+            'merge/authors',
+            keys,
+            top_books_from_author=top_books_from_author,
+            mrid=i.mrid,
+            can_merge=can_merge,
         )
 
     def POST(self):
-        i = web.input(key=[], master=None, merge_key=[])
+        i = web.input(key=[], master=None, merge_key=[], mrid=None, comment=None)
         keys = uniq(i.key)
         selected = uniq(i.merge_key)
+
+        user = get_current_user()
+        can_merge = user and (
+            user.is_admin() or user.is_usergroup_member('/usergroup/super-librarians')
+        )
+        can_request_merge = not can_merge and (
+            user and user.is_usergroup_member('/usergroup/librarians')
+        )
 
         # filter bad keys
         keys = self.filter_authors(keys)
@@ -301,16 +303,40 @@ class merge_authors(delegate.page):
                 keys,
                 top_books_from_author=top_books_from_author,
                 formdata=formdata,
+                mrid=i.mrid,
             )
+        elif can_request_merge:
+            # Create merge author request:
+            selected.insert(0, i.master)
+            data = {
+                'mr_type': 2,
+                'action': 'create-pending',
+                'olids': ','.join(selected),
+            }
+
+            if i.comment:
+                data['comment'] = i.comment
+
+            result = process_merge_request('create-request', data)
+            mrid = result.get('id', None)
+
+            username = user.get('key').split('/')[-1]
+
+            redir_url = f'/merges?submitter={username}'
+            if mrid:
+                redir_url = f'{redir_url}#mrid-{mrid}'
+
+            raise web.seeother(redir_url)
         else:
             # redirect to the master. The master will display a progressbar and call the merge_authors_json to trigger the merge.
-            raise web.seeother(
-                "/authors/"
-                + i.master
-                + "/-/"
-                + "?merge=true&duplicates="
-                + ",".join(selected)
+            redir_url = (
+                f'/authors/{i.master}/-/?merge=true&duplicates={",".join(selected)}'
             )
+            if i.mrid:
+                redir_url = f'{redir_url}&mrid={i.mrid}'
+            if i.comment:
+                redir_url = f'{redir_url}&comment={i.comment}'
+            raise web.seeother(redir_url)
 
 
 class merge_authors_json(delegate.page):
@@ -330,10 +356,24 @@ class merge_authors_json(delegate.page):
         data = json.loads(web.data())
         master = data['master']
         duplicates = data['duplicates']
+        mrid = data.get('mrid', None)
+        comment = data.get('comment', None)
+        olids = data.get('olids', '')
 
         engine = AuthorMergeEngine(AuthorRedirectEngine())
         try:
             result = engine.merge(master, duplicates)
+            if mrid:
+                # Update the request
+                rtype = 'update-request'
+                data = {'action': 'approve', 'mrid': mrid}
+            else:
+                # Create new request
+                rtype = 'create-request'
+                data = {'mr_type': 2, 'olids': olids, 'action': 'create-merged'}
+            if comment:
+                data['comment'] = comment
+            process_merge_request(rtype, data)
         except ClientException as e:
             raise web.badrequest(json.loads(e.json))
         return delegate.RawText(json.dumps(result), content_type="application/json")

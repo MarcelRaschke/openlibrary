@@ -1,11 +1,12 @@
 """Module for providing core functionality of lending on Open Library.
 """
-from typing import Literal, Optional, List
+from typing import Literal
 
 import web
 import datetime
-import time
 import logging
+import random
+import time
 import uuid
 
 import eventer
@@ -62,7 +63,13 @@ config_internal_tests_api_key = None
 
 def setup(config):
     """Initializes this module from openlibrary config."""
-    global config_loanstatus_url, config_ia_access_secret, config_bookreader_host, config_ia_ol_shared_key, config_ia_ol_xauth_s3, config_internal_tests_api_key, config_ia_loan_api_url, config_http_request_timeout, config_ia_availability_api_v2_url, config_ia_ol_metadata_write_s3, config_ia_xauth_api_url, config_http_request_timeout, config_ia_s3_auth_url, config_ia_users_loan_history, config_ia_loan_api_developer_key, config_ia_civicrm_api, config_ia_domain
+    global config_loanstatus_url, config_ia_access_secret, config_bookreader_host
+    global config_ia_ol_shared_key, config_ia_ol_xauth_s3, config_internal_tests_api_key
+    global config_ia_loan_api_url, config_http_request_timeout
+    global config_ia_availability_api_v2_url, config_ia_ol_metadata_write_s3
+    global config_ia_xauth_api_url, config_http_request_timeout, config_ia_s3_auth_url
+    global config_ia_users_loan_history, config_ia_loan_api_developer_key
+    global config_ia_civicrm_api, config_ia_domain
 
     config_loanstatus_url = config.get('loanstatus_url')
     config_bookreader_host = config.get('bookreader_host', 'archive.org')
@@ -83,40 +90,16 @@ def setup(config):
     config_http_request_timeout = config.get('http_request_timeout')
 
 
-def get_work_authors_and_related_subjects(work_id):
-    if 'env' not in web.ctx:
-        delegate.fakeload()
-    work = web.ctx.site.get(work_id)
-    return {
-        'authors': work.get_author_names(blacklist=['anonymous']) if work else [],
-        'subjects': work.get_related_books_subjects() if work else [],
-    }
-
-
-@public
-def cached_work_authors_and_subjects(work_id):
-    try:
-        return cache.memcache_memoize(
-            get_work_authors_and_related_subjects,
-            'works_authors_and_subjects',
-            timeout=dateutil.HALF_DAY_SECS,
-        )(work_id)
-    except AttributeError:
-        logger.exception("cached_work_authors_and_subjects(%s)" % work_id)
-        return {'authors': [], 'subject': []}
-
-
 @public
 def compose_ia_url(
-    limit: int = None,
+    limit: int | None = None,
     page: int = 1,
     subject=None,
     query=None,
-    work_id=None,
-    _type: Literal['authors', 'subjects'] = None,
     sorts=None,
-    advanced=True,
-) -> Optional[str]:
+    advanced: bool = True,
+    rate_limit_exempt: bool = True,
+) -> str | None:
     """This needs to be exposed by a generalized API endpoint within
     plugins/api/browse which lets lazy-load more items for
     the homepage carousel and support the upcoming /browse view
@@ -154,27 +137,6 @@ def compose_ia_url(
     if subject:
         q += " AND openlibrary_subject:" + subject
 
-    if work_id and _type in ("authors", "subjects"):
-        _q = None
-        works_authors_and_subjects = cached_work_authors_and_subjects(work_id)
-        if _type == "authors":
-            authors = works_authors_and_subjects.get('authors', [])
-            if not authors:
-                return None
-            name_variations = [
-                variation
-                for name in authors
-                for variation in (name, ','.join(name.split(' ', 1)[::-1]))
-            ]
-
-            _q = ' OR '.join(f'creator:"{name}"' for name in name_variations)
-        elif _type == "subjects":
-            subjects = works_authors_and_subjects.get('subjects', [])
-            if not subjects:
-                return None
-            _q = ' OR '.join(f'subject:"{subject}"' for subject in subjects)
-        q += ' AND ({}) AND !openlibrary_work:({})'.format(_q, work_id.split('/')[-1])
-
     if not advanced:
         _sort = sorts[0] if sorts else ''
         if ' desc' in _sort:
@@ -196,29 +158,14 @@ def compose_ia_url(
         ('page', page),
         ('output', 'json'),
     ]
+    if rate_limit_exempt:
+        params.append(('service', 'metadata__unlimited'))
     if not sorts or not isinstance(sorts, list):
         sorts = ['']
     for sort in sorts:
         params.append(('sort[]', sort))
     base_url = "http://%s/advancedsearch.php" % config_bookreader_host
     return base_url + '?' + urlencode(params)
-
-
-def get_random_available_ia_edition():
-    """uses archive advancedsearch to raise a random book"""
-    try:
-        url = (
-            "http://%s/advancedsearch.php?q=_exists_:openlibrary_work"
-            "+AND+(lending___available_to_borrow:true OR lending___available_to_browse:true)"
-            "&fl=identifier,openlibrary_edition"
-            "&output=json&rows=1&sort[]=random" % (config_bookreader_host)
-        )
-        response = requests.get(url, timeout=config_http_request_timeout)
-        items = response.json().get('response', {}).get('docs', [])
-        return items[0]["openlibrary_edition"]
-    except Exception:  # TODO: Narrow exception scope
-        logger.exception("get_random_available_ia_edition(%s)" % url)
-        return None
 
 
 @public
@@ -239,7 +186,7 @@ def get_groundtruth_availability(ocaid, s3_keys=None):
         response.raise_for_status()
     except requests.HTTPError:
         pass  # TODO: Handle unexpected responses from the availability server.
-    data = response.json().get('lending_status')
+    data = response.json().get('lending_status', {})
     # For debugging
     data['__src__'] = 'core.models.lending.get_groundtruth_availability'
     return data
@@ -255,7 +202,9 @@ def s3_loan_api(ocaid, s3_keys, action='browse'):
     """
     params = f'?action={action}&identifier={ocaid}'
     url = S3_LOAN_URL % config_bookreader_host
-    return requests.post(url + params, data=s3_keys)
+    response = requests.post(url + params, data=s3_keys)
+    response.raise_for_status()
+    return response
 
 
 def get_available(
@@ -263,8 +212,6 @@ def get_available(
     page=1,
     subject=None,
     query=None,
-    work_id=None,
-    _type=None,
     sorts=None,
     url=None,
 ):
@@ -282,8 +229,6 @@ def get_available(
         page=page,
         subject=subject,
         query=query,
-        work_id=work_id,
-        _type=_type,
         sorts=sorts,
     )
     if not url:
@@ -294,8 +239,6 @@ def get_available(
                 'page': page,
                 'subject': subject,
                 'query': query,
-                'work_id': work_id,
-                'type': _type,
                 'sorts': sorts,
             },
         )
@@ -308,7 +251,7 @@ def get_available(
         headers = {
             "x-client-id": client_ip,
             "x-preferred-client-id": client_ip,
-            "x-application-id": "openlibrary"
+            "x-application-id": "openlibrary",
         }
         response = requests.get(
             url, headers=headers, timeout=config_http_request_timeout
@@ -326,28 +269,24 @@ def get_available(
         return {'error': 'request_timeout'}
 
 
-def get_availability(key, ids):
+def get_availability(key: str, ids: list[str]) -> dict:
     """
     :param str key: the type of identifier
     :param list of str ids:
-    :rtype: dict
     """
     ids = [id_ for id_ in ids if id_]  # remove infogami.infobase.client.Nothing
     if not ids:
         return {}
 
     def update_availability_schema_to_v2(v1_resp, ocaid):
-        collections = v1_resp.get('collection', [])
+        """This functionattempts to take the output of e.g. Bulk Availability
+        API and add/infer attributes which are missing (but are
+        present on Ground Truth API)
+        """
+        # TODO: Make less brittle; maybe add simplelists/copy counts to Bulk Availability
         v1_resp['identifier'] = ocaid
         v1_resp['is_restricted'] = v1_resp['status'] != 'open'
-        v1_resp['is_printdisabled'] = 'printdisabled' in collections
-        v1_resp['is_lendable'] = 'inlibrary' in collections
-        v1_resp['is_readable'] = v1_resp['status'] == 'open'
-        # TODO: Make less brittle; maybe add simplelists/copy counts to IA availability
-        # endpoint
-        v1_resp['is_browseable'] = (
-            v1_resp['is_lendable'] and v1_resp['status'] == 'error'
-        )
+        v1_resp['is_browseable'] = v1_resp.get('available_to_browse', False)
         # For debugging
         v1_resp['__src__'] = 'core.models.lending.get_availability'
         return v1_resp
@@ -460,11 +399,9 @@ def get_availability_of_ocaid(ocaid):
     return get_availability('identifier', [ocaid])
 
 
-def get_availability_of_ocaids(ocaids):
+def get_availability_of_ocaids(ocaids: list[str]) -> dict:
     """
     Retrieves availability based on ocaids/archive.org identifiers
-    :param list[str] ocaids:
-    :rtype: dict
     """
     return get_availability('identifier', ocaids)
 
@@ -562,10 +499,7 @@ def get_loans_of_user(user_key):
     account = OpenLibraryAccount.get(username=user_key.split('/')[-1])
 
     loandata = web.ctx.site.store.values(type='/type/loan', name='user', value=user_key)
-    loans = [Loan(d) for d in loandata] + (
-        _get_ia_loans_of_user(account.itemname)
-        + _get_ia_loans_of_user(userkey2userid(user_key))
-    )
+    loans = [Loan(d) for d in loandata] + (_get_ia_loans_of_user(account.itemname))
     return loans
 
 
@@ -720,8 +654,6 @@ class Loan(dict):
                 'ocaid': identifier,
                 'expiry': expiry,
                 'uuid': _uuid,
-                'resource_type': 'bookreader',
-                'resource_id': 'bookreader:%s' % identifier,
                 'loaned_at': loaned_at,
                 'resource_type': resource_type,
                 'resource_id': resource_id,

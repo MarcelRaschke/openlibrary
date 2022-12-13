@@ -13,7 +13,6 @@ from openlibrary.catalog.add_book import (
     isbns_from_record,
     load,
     split_subtitle,
-    strip_accents,
     RequiredField,
 )
 
@@ -41,13 +40,6 @@ def test_isbns_from_record():
     assert '9780190906764' in result
     assert '0190906766' in result
     assert len(result) == 2
-
-
-def test_strip_accents():
-    assert strip_accents('Plain ASCII text') == 'Plain ASCII text'
-    assert strip_accents('Des idées napoléoniennes') == 'Des idees napoleoniennes'
-    # It only modifies Unicode Nonspacing Mark characters:
-    assert strip_accents('Bokmål : Standard Østnorsk') == 'Bokmal : Standard Østnorsk'
 
 
 bookseller_titles = [
@@ -149,8 +141,8 @@ def test_load_test_item(mock_site, add_languages, ia_writeback):
     assert e.title == 'Test item'
     assert e.ocaid == 'test_item'
     assert e.source_records == ['ia:test_item']
-    l = e.languages
-    assert len(l) == 1 and l[0].key == '/languages/eng'
+    languages = e.languages
+    assert len(languages) == 1 and languages[0].key == '/languages/eng'
 
     assert reply['work']['status'] == 'created'
     w = mock_site.get(reply['work']['key'])
@@ -563,7 +555,12 @@ def test_extra_author(mock_site, add_languages):
             "covers": [6060295, 5551343],
             "first_sentence": {
                 "type": "/type/text",
-                "value": "When it first became known to Europe that a new continent had been discovered, the wise men, philosophers, and especially the learned ecclesiastics, were sorely perplexed to account for such a discovery.",
+                "value": (
+                    "When it first became known to Europe that a new continent had "
+                    "been discovered, the wise men, philosophers, and especially the "
+                    "learned ecclesiastics, were sorely perplexed to account for such "
+                    "a discovery.",
+                ),
             },
             "subject_places": [
                 "Alaska",
@@ -592,7 +589,12 @@ def test_extra_author(mock_site, add_languages):
             ],
             "excerpts": [
                 {
-                    "excerpt": "When it first became known to Europe that a new continent had been discovered, the wise men, philosophers, and especially the learned ecclesiastics, were sorely perplexed to account for such a discovery."
+                    "excerpt": (
+                        "When it first became known to Europe that a new continent "
+                        "had been discovered, the wise men, philosophers, and "
+                        "especially the learned ecclesiastics, were sorely perplexed "
+                        "to account for such a discovery."
+                    )
                 }
             ],
             "first_publish_date": "1882",
@@ -843,7 +845,11 @@ def test_same_twice(mock_site, add_languages):
         'source_records': ['ia:test_item'],
         "publishers": ["Ten Speed Press"],
         "pagination": "20 p.",
-        "description": "A macabre mash-up of the children's classic Pat the Bunny and the present-day zombie phenomenon, with the tactile features of the original book revoltingly re-imagined for an adult audience.",
+        "description": (
+            "A macabre mash-up of the children's classic Pat the Bunny and the "
+            "present-day zombie phenomenon, with the tactile features of the original "
+            "book revoltingly re-imagined for an adult audience.",
+        ),
         "title": "Pat The Zombie",
         "isbn_13": ["9781607740360"],
         "languages": ["eng"],

@@ -1,20 +1,16 @@
 import re
+from re import Match
 import web
 from unicodedata import normalize
 import openlibrary.catalog.merge.normalize as merge
 
-import six
 
-try:
-    cmp = cmp  # Python 2
-except NameError:
-
-    def cmp(x, y):  # Python 3
-        return (x > y) - (x < y)
+def cmp(x, y):
+    return (x > y) - (x < y)
 
 
 re_date = map(
-    re.compile,
+    re.compile,  # type: ignore[arg-type]
     [
         r'(?P<birth_date>\d+\??)-(?P<death_date>\d+\??)',
         r'(?P<birth_date>\d+\??)-',
@@ -41,7 +37,7 @@ def key_int(rec):
     return int(web.numify(rec['key']))
 
 
-def author_dates_match(a, b):
+def author_dates_match(a: dict, b: dict) -> bool:
     """
     Checks if the years of two authors match. Only compares years,
     not names or keys. Works by returning False if any year specified in one record
@@ -50,7 +46,6 @@ def author_dates_match(a, b):
 
     :param dict a: Author import dict {"name": "Some One", "birth_date": "1960"}
     :param dict b: Author import dict {"name": "Some One"}
-    :rtype: bool
     """
     for k in ['birth_date', 'death_date', 'date']:
         if k not in a or a[k] is None or k not in b or b[k] is None:
@@ -67,14 +62,13 @@ def author_dates_match(a, b):
     return True
 
 
-def flip_name(name):
+def flip_name(name: str) -> str:
     """
     Flip author name about the comma, stripping the comma, and removing non
     abbreviated end dots. Returns name with end dot stripped if no comma+space found.
     The intent is to convert a Library indexed name to natural name order.
 
     :param str name: e.g. "Smith, John." or "Smith, J."
-    :rtype: str
     :return: e.g. "John Smith" or "J. Smith"
     """
 
@@ -84,7 +78,10 @@ def flip_name(name):
     if name.find(', ') == -1:
         return name
     m = re_marc_name.match(name)
-    return m.group(2) + ' ' + m.group(1)
+    if isinstance(m, Match):
+        return m.group(2) + ' ' + m.group(1)
+
+    return ""
 
 
 def remove_trailing_number_dot(date):
@@ -105,7 +102,7 @@ def remove_trailing_dot(s):
 
 
 def fix_l_in_date(date):
-    if not 'l' in date:
+    if 'l' not in date:
         return date
     return re_l_in_date.sub(lambda m: m.group(1).replace('l', '1'), date)
 
@@ -179,7 +176,7 @@ def match_with_bad_chars(a, b):
         return True
 
     def drop(s):
-        return re_drop.sub('', six.ensure_text(s))
+        return re_drop.sub('', s.decode() if isinstance(s, bytes) else s)
 
     return drop(a) == drop(b)
 
@@ -270,13 +267,12 @@ def get_title(e):
     return title
 
 
-def mk_norm(s):
+def mk_norm(s: str) -> str:
     """
     Normalizes titles and strips ALL spaces and small words
     to aid with string comparisons of two titles.
 
     :param str s: A book title to normalize and strip.
-    :rtype: str
     :return: a lowercase string with no spaces, containing the main words of the title.
     """
 
@@ -290,16 +286,3 @@ def mk_norm(s):
     elif norm.startswith('a '):
         norm = norm[2:]
     return norm.replace(' ', '')
-
-
-def error_mail(msg_from, msg_to, subject, body):
-    assert isinstance(msg_to, list)
-    msg = 'From: {}\nTo: {}\nSubject: {}\n\n{}'.format(
-        msg_from, ', '.join(msg_to), subject, body
-    )
-
-    import smtplib
-
-    server = smtplib.SMTP('mail.archive.org')
-    server.sendmail(msg_from, msg_to, msg)
-    server.quit()

@@ -9,15 +9,12 @@ import string
 
 import requests
 import web
-from six.moves.urllib.parse import splitquery, unquote, unquote_plus
-from six.moves.urllib.parse import urlencode as real_urlencode
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, unquote, unquote_plus  # type: ignore[attr-defined]
+from urllib.parse import urlencode as real_urlencode
 
 from openlibrary.coverstore import config, oldb
 
-try:
-    file  # Python 2
-except NameError:  # Python 3
-    from io import IOBase as file
+from io import IOBase as file
 
 socket.setdefaulttimeout(10.0)
 
@@ -81,17 +78,17 @@ def download(url):
     return requests.get(url, headers={'User-Agent': USER_AGENT}).content
 
 
-def urldecode(url):
+def urldecode(url: str) -> tuple[str, dict[str, str]]:
     """
     >>> urldecode('http://google.com/search?q=bar&x=y')
     ('http://google.com/search', {'q': 'bar', 'x': 'y'})
     >>> urldecode('http://google.com/')
     ('http://google.com/', {})
     """
-    base, query = splitquery(url)
-    query = query or ""
-    items = [item.split('=', 1) for item in query.split('&') if '=' in item]
+    split_url = urlsplit(url)
+    items = parse_qsl(split_url.query)
     d = {unquote(k): unquote_plus(v) for (k, v) in items}
+    base = urlunsplit(split_url._replace(query=''))
     return base, d
 
 

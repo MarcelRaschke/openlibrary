@@ -30,6 +30,11 @@ from openlibrary import accounts
 from openlibrary.core import lending, admin as admin_stats, helpers as h, imports, cache
 from openlibrary.core.waitinglist import Stats as WLStats
 from openlibrary.core.sponsorships import summary, sync_completed_sponsored_books
+from openlibrary.core.bookshelves import Bookshelves
+from openlibrary.core.ratings import Ratings
+from openlibrary.core.booknotes import Booknotes
+from openlibrary.core.observations import Observations
+from openlibrary.core.models import Work
 
 from openlibrary.plugins.upstream import forms, spamcheck
 from openlibrary.plugins.upstream.account import send_forgot_password_email
@@ -77,8 +82,16 @@ class admin(delegate.page):
         if not m:
             raise web.nomethod(cls=cls)
         else:
+            if (
+                context.user
+                and context.user.is_usergroup_member('/usergroup/librarians')
+                and web.ctx.path == '/admin/solr'
+            ):
+                return m(*args)
             if self.is_admin() or (
-                librarians and context.user and context.user.is_librarian()
+                librarians
+                and context.user
+                and context.user.is_usergroup_member('/usergroup/super-librarians')
             ):
                 return m(*args)
             else:
@@ -201,6 +214,29 @@ class add_work_to_staff_picks:
         return delegate.RawText(json.dumps(results), content_type="application/json")
 
 
+class resolve_redirects:
+    def GET(self):
+        return self.main(test=True)
+
+    def POST(self):
+        return self.main(test=False)
+
+    def main(self, test=False):
+        params = web.input(key='', test='')
+
+        # Provide an escape hatch to let GET requests resolve
+        if test is True and params.test == 'false':
+            test = False
+
+        # Provide an escape hatch to let POST requests preview
+        elif test is False and params.test:
+            test = True
+
+        summary = Work.resolve_redirect_chain(params.key, test=test)
+
+        return delegate.RawText(json.dumps(summary), content_type="application/json")
+
+
 class sync_ol_ia:
     def GET(self):
         """Updates an Open Library edition's Archive.org item by writing its
@@ -228,7 +264,7 @@ class people_view:
         if not user:
             raise web.notfound()
 
-        i = web.input(action=None, tag=None, bot=None)
+        i = web.input(action=None, tag=None, bot=None, dry_run=None)
         if i.action == "update_email":
             return self.POST_update_email(user, i)
         elif i.action == "update_password":
@@ -253,6 +289,9 @@ class people_view:
             return self.POST_set_bot_flag(user, i.bot)
         elif i.action == "su":
             return self.POST_su(user)
+        elif i.action == "anonymize_account":
+            test = True if i.dry_run else False
+            return self.POST_anonymize_account(user, test)
         else:
             raise web.seeother(web.ctx.path)
 
@@ -270,10 +309,20 @@ class people_view:
 
     def POST_block_account_and_revert(self, account):
         account.block()
-        changes = account.get_recentchanges(limit=1000)
-        changeset_ids = [c.id for c in changes]
-        ipaddress_view().revert(changeset_ids, "Reverted Spam")
-        add_flash_message("info", "Blocked the account and reverted all edits.")
+        i = 0
+        edits = 0
+        stop = False
+        while not stop:
+            changes = account.get_recentchanges(limit=100, offset=100 * i)
+            changeset_ids = [c.id for c in changes]
+            _, len_docs = ipaddress_view().revert(changeset_ids, "Reverted Spam")
+            edits += len_docs
+            i += 1
+            if len(changes) < 100:
+                stop = True
+        add_flash_message(
+            "info", f"Blocked the account and reverted all {edits} edits."
+        )
         raise web.seeother(web.ctx.path)
 
     def POST_unblock_account(self, account):
@@ -339,6 +388,19 @@ class people_view:
         web.setcookie(config.login_cookie_name, code, expires="")
         return web.seeother("/")
 
+    def POST_anonymize_account(self, account, test):
+        results = account.anonymize(test=test)
+        msg = (
+            f"Account anonymized. New username: {results['new_username']}. "
+            f"Notes deleted: {results['booknotes_count']}. "
+            f"Ratings updated: {results['ratings_count']}. "
+            f"Observations updated: {results['observations_count']}. "
+            f"Bookshelves updated: {results['bookshelves_count']}."
+            f"Merge requests updated: {results['merge_request_count']}"
+        )
+        add_flash_message("info", msg)
+        raise web.seeother(web.ctx.path)
+
 
 class people_edits:
     def GET(self, username):
@@ -392,10 +454,13 @@ class ipaddress_view:
             for cid in changeset_ids
             for c in site.get_change(cid).changes
         ]
-
+        docs = [doc for doc in docs if doc.get('type', {}).get('key') != '/type/delete']
         logger.debug("Reverting %d docs", len(docs))
         data = {"reverted_changesets": [str(cid) for cid in changeset_ids]}
-        return web.ctx.site.save_many(docs, action="revert", data=data, comment=comment)
+        manifest = web.ctx.site.save_many(
+            docs, action="revert", data=data, comment=comment
+        )
+        return manifest, len(docs)
 
 
 class stats:
@@ -829,6 +894,10 @@ def setup():
     register_admin_page('/admin/permissions', permissions, label="")
     register_admin_page('/admin/solr', solr, label="", librarians=True)
     register_admin_page('/admin/sync', sync_ol_ia, label="", librarians=True)
+    register_admin_page(
+        '/admin/resolve_redirects', resolve_redirects, label="Resolve Redirects"
+    )
+
     register_admin_page(
         '/admin/staffpicks', add_work_to_staff_picks, label="", librarians=True
     )

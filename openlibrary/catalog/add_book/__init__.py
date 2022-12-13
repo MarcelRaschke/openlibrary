@@ -25,7 +25,6 @@ A record is loaded by calling the load function.
 import json
 import re
 
-import unicodedata as ucd
 import web
 
 from collections import defaultdict
@@ -40,8 +39,10 @@ from openlibrary import accounts
 from openlibrary.catalog.merge.merge_marc import build_marc
 from openlibrary.catalog.utils import mk_norm
 from openlibrary.core import lending
+from openlibrary.plugins.upstream.utils import strip_accents
 from openlibrary.utils import uniq, dicthash
 from openlibrary.utils.isbn import normalize_isbn
+from openlibrary.utils.lccn import normalize_lccn
 
 from openlibrary.catalog.add_book.load_book import (
     build_query,
@@ -103,15 +104,6 @@ bad_titles = {
 }
 
 subject_fields = ['subjects', 'subject_places', 'subject_times', 'subject_people']
-
-
-def strip_accents(s):
-    """http://stackoverflow.com/questions/517923/what-is-the-best-way-to-remove-accents-in-a-python-unicode-string"""
-    try:
-        s.encode('ascii')
-        return s
-    except UnicodeEncodeError:
-        return ''.join(c for c in ucd.normalize('NFD', s) if ucd.category(c) != 'Mn')
 
 
 def normalize(s):
@@ -373,19 +365,23 @@ def update_ia_metadata_for_ol_edition(edition_id):
     return data
 
 
-def normalize_record_isbns(rec):
+def normalize_record_bibids(rec):
     """
-    Returns the Edition import record with all ISBN fields cleaned.
+    Returns the Edition import record with all ISBN fields and LCCNs cleaned.
 
     :param dict rec: Edition import record
     :rtype: dict
-    :return: A record with cleaned ISBNs in the various possible ISBN locations.
+    :return: A record with cleaned LCCNs, and ISBNs in the various possible ISBN locations.
     """
     for field in ('isbn_13', 'isbn_10', 'isbn'):
         if rec.get(field):
             rec[field] = [
                 normalize_isbn(isbn) for isbn in rec.get(field) if normalize_isbn(isbn)
             ]
+    if rec.get('lccn'):
+        rec['lccn'] = [
+            normalize_lccn(lccn) for lccn in rec.get('lccn') if normalize_lccn(lccn)
+        ]
     return rec
 
 
@@ -453,6 +449,8 @@ def early_exit(rec):
     # only searches for the first value from these lists
     for f in 'source_records', 'oclc_numbers', 'lccn':
         if rec.get(f):
+            if f == 'source_records' and not rec[f][0].startswith('ia:'):
+                continue
             ekeys = editions_matched(rec, f, rec[f][0])
             if ekeys:
                 return ekeys[0]
@@ -505,7 +503,7 @@ def find_exact_match(rec, edition_pool):
                     continue
                 if k == 'languages':
                     existing_value = [
-                        str(re_lang.match(l.key).group(1)) for l in existing_value
+                        str(re_lang.match(lang.key).group(1)) for lang in existing_value
                     ]
                 if k == 'authors':
                     existing_value = [dict(a) for a in existing_value]
@@ -712,7 +710,7 @@ def load(rec, account_key=None):
             rec['title'] = title
             rec['subtitle'] = subtitle
 
-    rec = normalize_record_isbns(rec)
+    rec = normalize_record_bibids(rec)
 
     edition_pool = build_pool(rec)
     # deduplicate authors
@@ -808,10 +806,11 @@ def load(rec, account_key=None):
         'local_id',
         'lccn',
         'lc_classifications',
+        'oclc_numbers',
         'source_records',
     ]
     for f in edition_fields:
-        if f not in rec:
+        if f not in rec or not rec[f]:
             continue
         # ensure values is a list
         values = rec[f] if isinstance(rec[f], list) else [rec[f]]
@@ -822,6 +821,16 @@ def load(rec, account_key=None):
         else:
             e[f] = to_add = values
         if to_add:
+            need_edition_save = True
+
+    # Add new identifiers
+    if 'identifiers' in rec:
+        identifiers = defaultdict(list, e.dict().get('identifiers', {}))
+        for k, vals in rec['identifiers'].items():
+            identifiers[k].extend(vals)
+            identifiers[k] = list(set(identifiers[k]))
+        if e.dict().get('identifiers') != identifiers:
+            e['identifiers'] = identifiers
             need_edition_save = True
 
     edits = []

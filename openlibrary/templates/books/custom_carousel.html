@@ -21,13 +21,20 @@ $def render_carousel_cover(book, lazy):
   $elif book.get('cover_edition_key'):
     $ cover_url = '%s/b/olid/%s-M.jpg'%(cover_host, book.get('cover_edition_key'))
   $else:
-     $ cover_url = False
+    $ cover_url = False
+
   $if book.get('authors'):
     $ author_names = [author.name for author in book.authors]
+  $elif book.get('author_name'):
+    $ author_names = book.get('author_name', [])
+  $else:
+    $ author_names = []
+
+  $if author_names:
     $ byline = _(' by %(name)s', name=', '.join(author_names))
   $else:
     $ byline = ''
-    $ author_names = ''
+
   $ modifier = ''
   $ work_key = book.key if book.key.startswith('/work') else book.get('work_key')
 
@@ -44,7 +51,7 @@ $def render_carousel_cover(book, lazy):
           $else:
             src="$(cover_url)"/>
         $else:
-          <div class="carousel__item__blankcover">
+          <div class="carousel__item__blankcover"  title="$(title)">
             <div class="carousel__item__blankcover--title">$:macros.TruncateString(title, 70)</div>
             $if author_names:
               <div class="carousel__item__blankcover--authors">$:macros.TruncateString(', '.join(author_names), 30)</div>

@@ -29,7 +29,7 @@ from openlibrary.plugins.importapi import (
 from lxml import etree
 import logging
 
-from six.moves import urllib
+import urllib
 
 MARC_LENGTH_POS = 5
 logger = logging.getLogger('openlibrary.importapi')
@@ -59,17 +59,13 @@ def parse_meta_headers(edition_builder):
             edition_builder.add(meta_key, v, restrict_keys=False)
 
 
-def parse_data(data):
+def parse_data(data: bytes) -> tuple[dict | None, str | None]:
     """
     Takes POSTed data and determines the format, and returns an Edition record
     suitable for adding to OL.
 
     :param bytes data: Raw data
-    :rtype: (dict|None, str|None)
     :return: (Edition record, format (rdf|opds|marcxml|json|marc)) or (None, None)
-
-    from typing import Dict, Optional, Tuple
-    def parse_data(data: bytes) -> Tuple[Optional[Dict], Optional[str]]:
     """
     data = data.strip()
     if b'<?xml' in data[:10]:
@@ -99,8 +95,8 @@ def parse_data(data):
         # Marc Binary
         if len(data) < MARC_LENGTH_POS or len(data) != int(data[:MARC_LENGTH_POS]):
             raise DataError('no-marc-record')
-        rec = MarcBinary(data)
-        edition = read_edition(rec)
+        record = MarcBinary(data)
+        edition = read_edition(record)
         edition_builder = import_edition_builder.import_edition_builder(
             init_dict=edition
         )
@@ -129,6 +125,13 @@ class importapi:
 
         try:
             edition, format = parse_data(data)
+            # Validation requires valid publishers and authors.
+            # If data unavailable, provide throw-away data which validates
+            # We use ["????"] as an override pattern
+            if edition.get('publishers') == ["????"]:
+                edition.pop('publishers')
+            if edition.get('authors') == [{"name": "????"}]:
+                edition.pop('authors')
         except DataError as e:
             return self.error(str(e), 'Failed to parse import data')
         except ValidationError as e:
@@ -145,6 +148,10 @@ class importapi:
             return self.error('missing-required-field', str(e))
         except ClientException as e:
             return self.error('bad-request', **json.loads(e.json))
+        except TypeError as e:
+            return self.error('type-error', repr(e))
+        except Exception as e:
+            return self.error('unhandled-exception', repr(e))
 
 
 def raise_non_book_marc(marc_record, **kwargs):
@@ -176,7 +183,9 @@ class ia_importapi(importapi):
     """
 
     @classmethod
-    def ia_import(cls, identifier, require_marc=True, force_import=False):
+    def ia_import(
+        cls, identifier: str, require_marc: bool = True, force_import: bool = False
+    ) -> str:
         """
         Performs logic to fetch archive.org item + metadata,
         produces a data dict, then loads into Open Library
@@ -184,7 +193,6 @@ class ia_importapi(importapi):
         :param str identifier: archive.org ocaid
         :param bool require_marc: require archive.org item have MARC record?
         :param bool force_import: force import of this record
-        :rtype: dict
         :returns: the data of the imported book or raises  BookImportError
         """
         # Case 1 - Is this a valid Archive.org item?
@@ -239,7 +247,7 @@ class ia_importapi(importapi):
 
         i = web.input()
 
-        require_marc = not (i.get('require_marc') == 'false')
+        require_marc = i.get('require_marc') != 'false'
         force_import = i.get('force_import') == 'true'
         bulk_marc = i.get('bulk_marc') == 'true'
 
@@ -283,17 +291,17 @@ class ia_importapi(importapi):
                 id_field, id_subfield = local_id_type.id_location.split('$')
 
                 def get_subfield(field, id_subfield):
-                    if isinstance(field, str):
-                        return field
+                    if isinstance(field[1], str):
+                        return field[1]
                     subfields = field[1].get_subfield_values(id_subfield)
                     return subfields[0] if subfields else None
 
-                _ids = [
+                ids = [
                     get_subfield(f, id_subfield)
                     for f in rec.read_fields([id_field])
                     if f and get_subfield(f, id_subfield)
                 ]
-                edition['local_id'] = [f'urn:{prefix}:{_id}' for _id in _ids]
+                edition['local_id'] = [f'urn:{prefix}:{id_}' for id_ in ids]
 
             # Don't add the book if the MARC record is a non-monograph item,
             # unless it is a scanning partner record and/or force_import is set.
@@ -316,12 +324,11 @@ class ia_importapi(importapi):
             return self.error(e.error_code, e.error, **e.kwargs)
 
     @staticmethod
-    def get_ia_record(metadata):
+    def get_ia_record(metadata: dict) -> dict:
         """
         Generate Edition record from Archive.org metadata, in lieu of a MARC record
 
         :param dict metadata: metadata retrieved from metadata API
-        :rtype: dict
         :return: Edition record
         """
         authors = [{'name': name} for name in metadata.get('creator', '').split(';')]
@@ -352,26 +359,24 @@ class ia_importapi(importapi):
         return d
 
     @staticmethod
-    def load_book(edition_data):
+    def load_book(edition_data: dict) -> str:
         """
         Takes a well constructed full Edition record and sends it to add_book
         to check whether it is already in the system, and to add it, and a Work
         if they do not already exist.
 
         :param dict edition_data: Edition record
-        :rtype: dict
         """
         result = add_book.load(edition_data)
         return json.dumps(result)
 
     @staticmethod
-    def populate_edition_data(edition, identifier):
+    def populate_edition_data(edition: dict, identifier: str) -> dict:
         """
         Adds archive.org specific fields to a generic Edition record, based on identifier.
 
         :param dict edition: Edition record
         :param str identifier: ocaid
-        :rtype: dict
         :return: Edition record
         """
         edition['ocaid'] = identifier
@@ -380,13 +385,12 @@ class ia_importapi(importapi):
         return edition
 
     @staticmethod
-    def find_edition(identifier):
+    def find_edition(identifier: str) -> str | None:
         """
         Checks if the given identifier has already been imported into OL.
 
         :param str identifier: ocaid
-        :rtype: str
-        :return: OL item key of matching item: '/books/OL..M'
+        :return: OL item key of matching item: '/books/OL..M' or None if no item matches
         """
         # match ocaid
         q = {"type": "/type/edition", "ocaid": identifier}
@@ -400,6 +404,8 @@ class ia_importapi(importapi):
         keys = web.ctx.site.things(q)
         if keys:
             return keys[0]
+
+        return None
 
     @staticmethod
     def status_matched(key):

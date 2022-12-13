@@ -2,14 +2,11 @@ import datetime
 import pytest
 import web
 
-from infogami.utils.view import render_template
 from infogami.utils import template, context
 from openlibrary.i18n import gettext
 from openlibrary.core.admin import Stats
 from openlibrary.mocks.mock_infobase import MockSite
 from bs4 import BeautifulSoup
-
-import six
 
 from openlibrary import core
 from openlibrary.plugins.openlibrary import home
@@ -76,22 +73,6 @@ class TestHomeTemplates:
         html = str(render_template("home/stats"))
         assert html == ""
 
-    def test_read_template(self, render_template, monkeypatch):
-        # getting read-online books fails because solr is not defined.
-        # Empty list should be returned when there is error.
-        monkeypatch.setattr(home, 'random_ebooks', lambda: None)
-        books = home.readonline_carousel()
-        html = str(
-            render_template(
-                "books/custom_carousel",
-                books=books,
-                title="Classic Books",
-                url="/read",
-                key="public_domain",
-            )
-        )
-        assert html.strip() == ""
-
     def test_home_template(self, render_template, mock_site, monkeypatch):
         self.setup_monkeypatch(monkeypatch)
         docs = [
@@ -152,7 +133,6 @@ class TestHomeTemplates:
             "Kids",
             "Thrillers",
             "Romance",
-            "Classic Books",
             "Textbooks",
         ]
         for h in headers:

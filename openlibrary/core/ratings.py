@@ -15,23 +15,30 @@ class WorkRatingsSummary(TypedDict):
     ratings_count_5: int
 
 
-class Ratings:
+class Ratings(db.CommonExtras):
 
+    TABLENAME = "ratings"
     VALID_STAR_RATINGS = range(6)  # inclusive: [0 - 5] (0-5 star)
+    PRIMARY_KEY = ["username", "work_id"]
+    ALLOW_DELETE_ON_CONFLICT = True
 
     @classmethod
-    def summary(cls):
+    def summary(cls) -> dict:
         return {
             'total_books_starred': {
                 'total': Ratings.total_num_books_rated(),
                 'month': Ratings.total_num_books_rated(since=DATE_ONE_MONTH_AGO),
                 'week': Ratings.total_num_books_rated(since=DATE_ONE_WEEK_AGO),
-                'unique': Ratings.total_num_unique_raters(),
-            }
+            },
+            'total_star_raters': {
+                'total': Ratings.total_num_unique_raters(),
+                'month': Ratings.total_num_unique_raters(since=DATE_ONE_MONTH_AGO),
+                'week': Ratings.total_num_unique_raters(since=DATE_ONE_WEEK_AGO),
+            },
         }
 
     @classmethod
-    def total_num_books_rated(cls, since=None, distinct=False):
+    def total_num_books_rated(cls, since=None, distinct=False) -> Optional[int]:
         oldb = db.get_db()
         query = "SELECT count(%s work_id) from ratings" % (
             'DISTINCT' if distinct else ''
@@ -39,19 +46,19 @@ class Ratings:
         if since:
             query += " WHERE created >= $since"
         results = oldb.query(query, vars={'since': since})
-        return results[0] if results else None
+        return results[0]['count'] if results else 0
 
     @classmethod
-    def total_num_unique_raters(cls, since=None):
+    def total_num_unique_raters(cls, since=None) -> int:
         oldb = db.get_db()
         query = "select count(DISTINCT username) from ratings"
         if since:
             query += " WHERE created >= $since"
         results = oldb.query(query, vars={'since': since})
-        return results[0] if results else None
+        return results[0]['count'] if results else 0
 
     @classmethod
-    def most_rated_books(cls, limit=10, since=False):
+    def most_rated_books(cls, limit=10, since=False) -> list:
         oldb = db.get_db()
         query = 'select work_id, count(*) as cnt from ratings '
         if since:
@@ -60,13 +67,13 @@ class Ratings:
         return list(oldb.query(query, vars={'limit': limit, 'since': since}))
 
     @classmethod
-    def get_users_ratings(cls, username):
+    def get_users_ratings(cls, username) -> list:
         oldb = db.get_db()
         query = 'select * from ratings where username=$username'
         return list(oldb.query(query, vars={'username': username}))
 
     @classmethod
-    def get_rating_stats(cls, work_id):
+    def get_rating_stats(cls, work_id) -> dict:
         oldb = db.get_db()
         query = (
             "SELECT AVG(rating) as avg_rating, COUNT(DISTINCT username) as num_ratings"
@@ -98,18 +105,19 @@ class Ratings:
         return result[0] if result else None
 
     @classmethod
-    def get_all_works_ratings(cls, work_id):
+    def get_all_works_ratings(cls, work_id) -> list:
         oldb = db.get_db()
         query = 'select * from ratings where work_id=$work_id'
-        return list(oldb.query(query, vars={'work_id': work_id}))
+        return list(oldb.query(query, vars={'work_id': int(work_id)}))
 
     @classmethod
-    def get_users_rating_for_work(cls, username, work_id):
+    def get_users_rating_for_work(cls, username: str, work_id: str | int) -> int | None:
+        """work_id must be convertible to int."""
         oldb = db.get_db()
         data = {'username': username, 'work_id': int(work_id)}
         query = 'SELECT * from ratings where username=$username AND work_id=$work_id'
         results = list(oldb.query(query, vars=data))
-        rating = results[0].rating if results else None
+        rating: int | None = results[0].rating if results else None
         return rating
 
     @classmethod

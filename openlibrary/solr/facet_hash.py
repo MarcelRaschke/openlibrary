@@ -1,8 +1,6 @@
 import string
 from hashlib import sha1 as mkhash
 
-import six
-
 
 # choose token length to make collisions unlikely (if there is a
 # rare collision once in a while, we tolerate it, it just means
@@ -17,6 +15,7 @@ import six
 # seeing a collision on any particular query).
 
 facet_token_length = 12
+
 
 # turn v into a str object, by encoding from unicode or numeric
 # if necessary.

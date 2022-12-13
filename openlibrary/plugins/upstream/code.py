@@ -3,6 +3,7 @@
 import datetime
 import hashlib
 import io
+import json
 import os.path
 import random
 
@@ -10,6 +11,9 @@ import web
 
 from infogami import config
 from infogami.core import code as core
+from infogami.plugins.api.code import jsonapi, make_query
+from infogami.plugins.api.code import request as infogami_request
+
 from infogami.infobase import client
 from infogami.utils import delegate, app, types
 from infogami.utils.view import public, safeint, render
@@ -18,13 +22,20 @@ from infogami.utils.context import context
 
 from openlibrary import accounts
 
-from openlibrary.plugins.upstream import addbook, covers, merge_authors, models, utils
+from openlibrary.plugins.upstream import addbook, covers, models, utils
 from openlibrary.plugins.upstream import spamcheck
+from openlibrary.plugins.upstream import merge_authors
+from openlibrary.plugins.upstream import edits
+from openlibrary.plugins.upstream import checkins
 from openlibrary.plugins.upstream import borrow, recentchanges  # TODO: unused imports?
 from openlibrary.plugins.upstream.utils import render_component
 
 if not config.get('coverstore_url'):
-    config.coverstore_url = "https://covers.openlibrary.org"
+    config.coverstore_url = "https://covers.openlibrary.org"  # type: ignore[attr-defined]
+
+import logging
+
+logger = logging.getLogger('openlibrary.plugins.upstream.code')
 
 
 class static(delegate.page):
@@ -33,6 +44,25 @@ class static(delegate.page):
     def GET(self):
         host = 'https://%s' % web.ctx.host if 'openlibrary.org' in web.ctx.host else ''
         raise web.seeother(host + '/static' + web.ctx.path)
+
+
+class history(delegate.mode):
+    """Overwrite ?m=history to remove IP"""
+
+    encoding = "json"
+
+    @jsonapi
+    def GET(self, path):
+        query = make_query(web.input(), required_keys=['author', 'offset', 'limit'])
+        query['key'] = path
+        query['sort'] = '-created'
+        # Possibly use infogami.plugins.upstream.utils get_changes to avoid json load/dump?
+        history = json.loads(
+            infogami_request('/versions', data=dict(query=json.dumps(query)))
+        )
+        for i, row in enumerate(history):
+            history[i].pop("ip")
+        return json.dumps(history)
 
 
 class edit(core.edit):
@@ -94,13 +124,27 @@ class library_explorer(delegate.page):
 
 
 class merge_work(delegate.page):
-    path = r"(/works/OL\d+W)/merge"
+    path = "/works/merge"
 
-    def GET(self, key):
-        return "This looks like a good place for a merge UI!"
+    def GET(self):
+        i = web.input(records='', mrid=None, primary=None)
+        user = web.ctx.site.get_user()
+        has_access = user and (
+            (user.is_admin() or user.is_librarian())
+            or user.is_usergroup_member('/usergroup/super-librarians')
+        )
+        if not has_access:
+            raise web.HTTPError('403 Forbidden')
 
-    def POST(self, key):
-        pass
+        optional_kwargs = {}
+        if not (
+            user.is_usergroup_member('/usergroup/super-librarians') or user.is_admin()
+        ):
+            optional_kwargs['can_merge'] = 'false'
+
+        return render_template(
+            'merge/works', mrid=i.mrid, primary=i.primary, **optional_kwargs
+        )
 
 
 @web.memoize
@@ -247,9 +291,11 @@ def setup_jquery_urls():
     web.template.Template.globals['use_google_cdn'] = config.get('use_google_cdn', True)
 
 
-def user_is_admin_or_librarian():
+def user_can_revert_records():
     user = web.ctx.site.get_user()
-    return user and (user.is_admin() or user.is_librarian())
+    return user and (
+        user.is_admin() or user.is_usergroup_member('/usergroup/super-librarians')
+    )
 
 
 @public
@@ -277,7 +323,7 @@ class revert(delegate.mode):
         if v is None:
             raise web.seeother(web.changequery({}))
 
-        if not web.ctx.site.can_write(key) or not user_is_admin_or_librarian():
+        if not web.ctx.site.can_write(key) or not user_can_revert_records():
             return render.permission_denied(
                 web.ctx.fullpath, "Permission denied to edit " + key + "."
             )
@@ -340,6 +386,9 @@ def setup():
     addbook.setup()
     covers.setup()
     merge_authors.setup()
+    # merge_works.setup() # ILE code
+    edits.setup()
+    checkins.setup()
 
     from openlibrary.plugins.upstream import data, jsdef
 

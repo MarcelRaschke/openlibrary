@@ -5,13 +5,14 @@ $ stats_by_bookshelf = work and work.get_num_users_by_bookshelf() or {}
 $ avg = rating_stats.get('avg_rating')
 
 <ul class="readers-stats" itemprop="aggregateRating" itemscope itemtype="https://schema.org/AggregateRating">
-  <li class="avg-ratings">
+  <li class="avg-ratings" onclick="location.href='#starRatingSection';" data-ol-link-track="StarRating|StatsComponentClick">
     $if avg:
       $ stats_decimal = (float(avg))-(int(avg))
       $:('<span class="readers-stats__star">★</span>' * int(avg))
       $if (stats_decimal >= 0.5) and (stats_decimal < 1):
         $:('<span class="readers-stats__star--half">★</span>')
       <span itemprop="ratingValue">$avg</span>
+      <span class="dot">·</span>
   </li>
   <li>
     <span itemprop="reviewCount">$rating_stats.get('num_ratings', 0)</span> $_("Ratings")

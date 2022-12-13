@@ -1,12 +1,12 @@
-$def with (lists, work=None, edition=None, key=None, users_work_read_status=None, reading_log_only=False, use_work=False, page_url=None)
+$def with (lists, work=None, edition_key=None, key=None, users_work_read_status=None, reading_log_only=False, use_work=False, page_url=None, async_load=False, remove_on_change=False)
 
 $ user_key = ctx.user and ctx.user.key
 $ username = ctx.user and ctx.user.key.split('/')[-1]
 $ work_key = work and work.key
-$ edition_key = edition and edition.key
 
 $if ctx.user or not work_key:
-  <div class="widget-add $:(not work_key and 'old-style-lists')">
+  <div class="widget-add $:(not work_key and 'old-style-lists') $:(remove_on_change and 'removable')">
+    <input type="hidden" name="user-key" value="$(user_key)" />
     <div class="dropit Tools">
       $if edition_key and not work_key:
         <div class="dropper on edition-page-lists-dropdown">
@@ -29,7 +29,6 @@ $if ctx.user or not work_key:
 
             <input type="hidden" name="action" value="$(action_value)"/>
             <input type="hidden" name="bookshelf_id" value="$(bookshelf_id_value)"/>
-            <input type="hidden" name="user-key" value="$(user_key)" />
             <input type="hidden" name="default-key" value="$(key)" />
 
             <button class="book-progress-btn want-to-read $(activated_status)" type="submit">
@@ -84,11 +83,12 @@ $if ctx.user or not work_key:
             <div class="reading-lists">
               <p class="reading-list-title">$_('My Reading Lists:')</p>
               <div class="my-lists">
-                $for list in lists:
-                    $if not list['active']:
-                      <p class="list">
-                          <a href="$list.key" class="add-to-list" data-list-cover-url="$list.cover_url" data-list-key="$list.key">$list.name</a>
-                      </p>
+                $if async_load:
+                  $ ed_attr = 'data-edition-key=%s' % edition_key if edition_key else ''
+                  $ work_attr = 'data-work-key=%s' % work_key if work_key else ''
+                  <div class="list-loading-indicator" $ed_attr $work_attr>Loading<span class="loading-ellipsis">...</span></div>
+                $else:
+                  $:render_template('lists/dropper_lists', lists)
               </div>
               $if edition_key:
                   <p class="create checkboxes">
@@ -115,11 +115,10 @@ $if ctx.user or not work_key:
               </a>
               <div class="dropdown">
                 <div class="my-lists">
-                  $for list in lists:
-                    $if not list['active']:
-                      <p class="list">
-                          <a href="$list.key" class="add-to-list" data-list-key="$list.key">$list.name</a>
-                      </p>
+                  $if async_load:
+                    <div class="list-loading-indicator">Loading<span class="loading-ellipsis">...</span></div>
+                  $else:
+                    $:render_template('lists/dropper_lists', lists)
                 </div>
                 <p class="create"><a href="javascript:;" class="create-new-list">$_('Create a new list')</a>
                 </p>
@@ -168,6 +167,11 @@ $if ctx.user or not work_key:
             </form>
         </div>
     </div>
+  $if work_key and edition_key and ctx.user.is_usergroup_member('/usergroup/beta-testers'):
+    $ last_read_date = get_latest_read_date(work_key, edition_key)
+    $ date = last_read_date['event_date'] if last_read_date else None
+    $ event_id = last_read_date['id'] if last_read_date else None
+    $:render_template('check_ins/check_in_prompt', work_key, users_work_read_status, edition_key=edition_key, last_read_date=date, event_id=event_id)
 $else:
   <div class="dropit">
       <div class="dropper on">

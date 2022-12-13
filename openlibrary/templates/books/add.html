@@ -17,7 +17,9 @@ $var title: $_("Add a book")
 
         $ author = (work and work.authors and work.authors[0].author) or author
         <div class="formElement">
-            <div class="label"><label for="title">$_("Title")</label></div>
+            <div class="label">
+                <label for="title">$_("Title")</label> <span class="tip">$:_("Use <b><i>Title: Subtitle</i></b> to add a subtitle.")</span> <span class="red">*<span class="tip">$_("Required field")</span></span>
+            </div>
             <div class="input">
                 $if work:
                     <input type="text" id="title" disabled="disabled" value="$work.title"/>
@@ -32,20 +34,24 @@ $var title: $_("Add a book")
         </div>
 
         <div class="formElement">
-            <div class="label"><label for="publisher">$_("Who is the publisher?")</label></div>
+            <div class="label">
+                <label for="publisher">$_("Who is the publisher?")</label> <span class="tip">$_("For example"): <em>Oxford University Press; Penguin; W.W. Norton</em></span><span class="red">*<span class="tip">$_("Required field")</span></span>
+            </div>
             <div class="input">
                 <input type="text" name="publisher" class="required" id="publisher"/>
             </div>
         </div>
 
         <div class="formElement">
-            <div class="label"><label for="publish_date">$_("When was it published?")</label> <span class="smaller lighter">$_("The year it was published is plenty.")</span></div>
+            <div class="label">
+                <label for="publish_date">$_("When was it published?")</label> <span class="tip">$_("You should be able to find this in the first few pages of the book.")</span><span class="red">*<span class="tip">$_("Required field")</span></span>
+            </div>
             <div class="input">
                 <input type="text" name="publish_date" class="required publish-date" id="publish_date"/>
             </div>
         </div>
 
-        $ admin_user = ctx.user and (ctx.user.is_admin() or ctx.user.is_librarian())
+        $ admin_user = ctx.user and (ctx.user.is_admin() or ctx.user.is_usergroup_member('/usergroup/super-librarians'))
         <div class="formElement">
             <div class="label"><label for="id_value">$:_("And optionally, an ID number &#151; like an ISBN &#151; would be helpful...")</label></div>
                 <label for="id_name" class="hidden">$_("ID Type")</label>
@@ -62,6 +68,16 @@ $var title: $_("Add a book")
                 <input type="text" name="id_value" id="id_value" size="20" style="width:200px;"/>
             </div>
         </div>
+
+        $if admin_user:
+            <div class="formElement">
+                <div class="label">
+                    <label for="web_book_url">$_("Book URL")</label> <span class="tip">$_("Only fill this out if this is a web book")</span></span>
+                </div>
+                <div class="input">
+                    <input type="text" name="web_book_url" class="" id="web_book_url"/>
+                </div>
+            </div>
 
         $if recaptcha and not ctx.user:
             <div class="formElement">

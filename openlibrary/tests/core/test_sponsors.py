@@ -4,7 +4,6 @@ from openlibrary.core.sponsorships import do_we_want_it
 
 
 class TestSponsorship:
-
     def test_get_sponsored_editions(self, monkeypatch):
         user = storage(key='/person/mekBot')
 
@@ -21,12 +20,12 @@ class TestSponsorship:
                 return self
 
         monkeypatch.setattr(
-            sponsorships.requests, 'get', lambda url, **kwargs:
-            RequestMock({'response': {'docs': []}})
+            sponsorships.requests,
+            'get',
+            lambda url, **kwargs: RequestMock({'response': {'docs': []}}),
         )
 
         assert sponsorships.get_sponsored_editions(user) == []
-
 
     def test_get_sponsored_editions_civi(self, monkeypatch):
         user = storage(key='/person/mekBot')
@@ -60,17 +59,17 @@ class TestSponsorship:
             sponsorships.requests, 'get', lambda url, **kwargs: {'invalid': 'json'}
         )
         dwwi, matches = do_we_want_it(isbn)
-        assert dwwi == False
+        assert dwwi is False
         assert matches == []
 
         monkeypatch.setattr(sponsorships.requests, 'get', lambda url, **kwargs: None)
         dwwi, matches = do_we_want_it(isbn)
-        assert dwwi == False
+        assert dwwi is False
         assert matches == []
 
         # We need a copy ...
         r = storage({'json': lambda: {"response": 1}})
         monkeypatch.setattr(sponsorships.requests, 'get', lambda url, **kwargs: r)
         dwwi, matches = do_we_want_it(isbn)
-        assert dwwi == True
+        assert dwwi is True
         assert matches == []

@@ -1,6 +1,7 @@
 """
 
 """
+import secrets
 import time
 import datetime
 import hashlib
@@ -19,11 +20,16 @@ from infogami.utils.view import render_template, public
 from infogami.infobase.client import ClientException
 
 from openlibrary.core import stats, helpers
+from openlibrary.core.booknotes import Booknotes
+from openlibrary.core.bookshelves import Bookshelves
+from openlibrary.core.observations import Observations
+from openlibrary.core.ratings import Ratings
+from openlibrary.core.edits import CommunityEditsQueue
 
 try:
     from simplejson.errors import JSONDecodeError
 except ImportError:
-    from json.decoder import JSONDecodeError  # type: ignore
+    from json.decoder import JSONDecodeError  # type: ignore[misc, assignment]
 
 logger = logging.getLogger("openlibrary.account.model")
 
@@ -325,6 +331,60 @@ class Account(web.storage):
         self.bot = flag
         self._save()
 
+    def anonymize(self, test=False):
+        # Generate new unique username for patron:
+        # Note: Cannot test get_activation_link() locally
+        uuid = (
+            self.get_activation_link()['code']
+            if self.get_activation_link()
+            else generate_uuid()
+        )
+        new_username = f'anonymous-{uuid}'
+        results = {'new_username': new_username}
+
+        # Delete all of the patron's book notes:
+        results['booknotes_count'] = Booknotes.delete_all_by_username(
+            self.username, _test=test
+        )
+
+        # Anonymize patron's username in OL DB tables:
+        results['ratings_count'] = Ratings.update_username(
+            self.username, new_username, _test=test
+        )
+        results['observations_count'] = Observations.update_username(
+            self.username, new_username, _test=test
+        )
+        results['bookshelves_count'] = Bookshelves.update_username(
+            self.username, new_username, _test=test
+        )
+        results['merge_request_count'] = CommunityEditsQueue.update_submitter_name(
+            self.username, new_username, _test=test
+        )
+
+        if not test:
+            patron = self.get_user()
+            email = self.email
+            username = self.username
+
+            # Remove patron from all usergroups:
+            for grp in patron.usergroups:
+                grp.remove_user(patron.key)
+
+            # Set preferences to default:
+            patron.save_preferences({'updates': 'no', 'public_readlog': 'no'})
+
+            # Clear patron's profile page:
+            data = {'key': patron.key, 'type': '/type/delete'}
+            patron.set_data(data)
+
+            # Remove account information from store:
+            del web.ctx.site.store[f'account/{username}']
+            del web.ctx.site.store[f'account/{username}/verify']
+            del web.ctx.site.store[f'account/{username}/password']
+            del web.ctx.site.store[f'account-email/{email}']
+
+        return results
+
     @property
     def itemname(self):
         """Retrieves the Archive.org itemname which links Open Library and
@@ -492,7 +552,7 @@ class OpenLibraryAccount(Account):
 
     @property
     def verified(self):
-        return not (getattr(self, 'status', '') == 'pending')
+        return getattr(self, 'status', '') != 'pending'
 
     @property
     def blocked(self):
@@ -672,7 +732,7 @@ class InternetArchiveAccount(web.storage):
         except requests.HTTPError as e:
             return {'error': e.response.text, 'code': e.response.status_code}
         except JSONDecodeError as e:
-            return {'error': e.message, 'code': response.status_code}
+            return {'error': str(e), 'code': response.status_code}
 
     @classmethod
     def get(
@@ -734,7 +794,10 @@ def audit_accounts(
         r = InternetArchiveAccount.s3auth(s3_access_key, s3_secret_key)
         if not r.get('authorized', False):
             return {'error': 'invalid_s3keys'}
-        ia_login = {'success': True}
+        ia_login = {
+            'success': True,
+            'values': {'access': s3_access_key, 'secret': s3_secret_key},
+        }
         email = r['username']
     else:
         if not valid_email(email):
@@ -789,13 +852,13 @@ def audit_accounts(
         # lending.config_ia_auth_only is enabled, we need to create
         # and link it.
         if not ol_account:
-            if not password:
-                raise {'error': 'link_attempt_requires_password'}
             try:
                 ol_account = OpenLibraryAccount.create(
                     ia_account.itemname,
                     email,
-                    password,
+                    # since switching to IA creds, OL password
+                    # not used; make challenging random
+                    secrets.token_urlsafe(32),
                     displayname=ia_account.screenname,
                     verified=True,
                     retries=5,

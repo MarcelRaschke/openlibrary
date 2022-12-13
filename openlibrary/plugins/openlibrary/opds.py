@@ -6,8 +6,6 @@ A lightweight version of github.com/internetarchive/bookserver
 import lxml.etree as ET
 from infogami.infobase.utils import parse_datetime
 
-import six
-
 
 class OPDS:
     xmlns_atom = 'http://www.w3.org/2005/Atom'
@@ -64,7 +62,7 @@ class OPDS:
     # ___________________________________________________________________________
     def add_list(self, name, values, prefix='', attrs=None):
         attrs = attrs or {}
-        if isinstance(values, list) or isinstance(values, tuple):
+        if isinstance(values, (list, tuple)):
             for v in values:
                 self.add(name, prefix + str(v), attrs)
         elif values:
@@ -84,7 +82,7 @@ class OPDS:
     def create_rel_link(
         self, parent, rel, absurl, type='application/atom+xml', title=None
     ):
-        if None == parent:
+        if parent is None:
             parent = self.root
 
         element = ET.SubElement(parent, 'link')
@@ -104,7 +102,7 @@ class OPDS:
     # create_root()
     # ___________________________________________________________________________
     def create_root(self, root_name):
-        ### TODO: add updated element and uuid element
+        # ## TODO: add updated element and uuid element
         opds = ET.Element(OPDS.atom + root_name, nsmap=OPDS.nsmap)
 
         return opds

@@ -16,14 +16,21 @@ from openlibrary.utils import dateutil
 from openlibrary.plugins.upstream.utils import get_blog_feeds, get_coverstore_public_url
 from openlibrary.plugins.worksearch import search, subjects
 
-import six
-
-
 logger = logging.getLogger("openlibrary.home")
 
 CAROUSELS_PRESETS = {
-    'preset:thrillers': '(creator:"Clancy, Tom" OR creator:"King, Stephen" OR creator:"Clive Cussler" OR creator:("Cussler, Clive") OR creator:("Dean Koontz") OR creator:("Koontz, Dean") OR creator:("Higgins, Jack")) AND !publisher:"Pleasantville, N.Y. : Reader\'s Digest Association" AND languageSorter:"English"',
-    'preset:comics': '(subject:"comics" OR creator:("Gary Larson") OR creator:("Larson, Gary") OR creator:("Charles M Schulz") OR creator:("Schulz, Charles M") OR creator:("Jim Davis") OR creator:("Davis, Jim") OR creator:("Bill Watterson") OR creator:("Watterson, Bill") OR creator:("Lee, Stan"))',
+    'preset:thrillers': (
+        '(creator:"Clancy, Tom" OR creator:"King, Stephen" OR creator:"Clive Cussler" '
+        'OR creator:("Cussler, Clive") OR creator:("Dean Koontz") OR creator:("Koontz, '
+        'Dean") OR creator:("Higgins, Jack")) AND !publisher:"Pleasantville, N.Y. : '
+        'Reader\'s Digest Association" AND languageSorter:"English"'
+    ),
+    'preset:comics': (
+        '(subject:"comics" OR creator:("Gary Larson") OR creator:("Larson, Gary") '
+        'OR creator:("Charles M Schulz") OR creator:("Schulz, Charles M") OR '
+        'creator:("Jim Davis") OR creator:("Davis, Jim") OR creator:("Bill Watterson")'
+        'OR creator:("Watterson, Bill") OR creator:("Lee, Stan"))'
+    ),
     'preset:authorsalliance_mitpress': (
         '(openlibrary_subject:(authorsalliance) OR collection:(mitpress) OR '
         'publisher:(MIT Press) OR openlibrary_subject:(mitpress))'
@@ -660,15 +667,17 @@ class random_book(delegate.page):
     path = "/random"
 
     def GET(self):
-        olid = lending.get_random_available_ia_edition()
-        if olid:
-            raise web.seeother('/books/%s' % olid)
-        raise web.seeother("/")
+        solr = search.get_solr()
+        key = solr.select(
+            'type:edition AND ebook_access:[borrowable TO *]',
+            fields=['key'],
+            rows=1,
+            sort=f'random_{random.random()} desc',
+        )['docs'][0]['key']
+        raise web.seeother(key)
 
 
-def get_ia_carousel_books(
-    query=None, subject=None, work_id=None, sorts=None, _type=None, limit=None
-):
+def get_ia_carousel_books(query=None, subject=None, sorts=None, limit=None):
     if 'env' not in web.ctx:
         delegate.fakeload()
 
@@ -679,8 +688,6 @@ def get_ia_carousel_books(
     books = lending.get_available(
         limit=limit,
         subject=subject,
-        work_id=work_id,
-        _type=_type,
         sorts=sorts,
         query=query,
     )
@@ -733,8 +740,6 @@ def get_cached_featured_subjects():
 def generic_carousel(
     query=None,
     subject=None,
-    work_id=None,
-    _type=None,
     sorts=None,
     limit=None,
     timeout=None,
@@ -748,8 +753,6 @@ def generic_carousel(
     books = cached_ia_carousel_books(
         query=query,
         subject=subject,
-        work_id=work_id,
-        _type=_type,
         sorts=sorts,
         limit=limit,
     )
@@ -757,56 +760,10 @@ def generic_carousel(
         books = cached_ia_carousel_books.update(
             query=query,
             subject=subject,
-            work_id=work_id,
-            _type=_type,
             sorts=sorts,
             limit=limit,
         )[0]
     return storify(books) if books else books
-
-
-@public
-def readonline_carousel():
-    """Return template code for books pulled from search engine.
-    TODO: If problems, use stock list.
-    """
-    try:
-        data = random_ebooks()
-        if len(data) > 30:
-            data = lending.add_availability(random.sample(data, 30))
-            data = [d for d in data if d['availability']['is_readable']]
-        return storify(data)
-
-    except Exception:
-        logger.error("Failed to compute data for readonline_carousel", exc_info=True)
-        return None
-
-
-def random_ebooks(limit=2000):
-    solr = search.get_solr()
-    sort = "edition_count desc"
-    result = solr.select(
-        query='has_fulltext:true -public_scan_b:false',
-        rows=limit,
-        sort=sort,
-        fields=[
-            'has_fulltext',
-            'key',
-            'ia',
-            "title",
-            "cover_edition_key",
-            "author_key",
-            "author_name",
-        ],
-    )
-
-    return [format_work_data(doc) for doc in result.get('docs', []) if doc.get('ia')]
-
-
-# cache the results of random_ebooks in memcache for 15 minutes
-random_ebooks = cache.memcache_memoize(
-    random_ebooks, "home.random_ebooks", timeout=15 * 60
-)
 
 
 def format_list_editions(key):

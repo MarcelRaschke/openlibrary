@@ -1,14 +1,19 @@
 import array
 import datetime
+import io
 import json
 import logging
 import os
 
-import memcache
 import requests
+
 import web
 
-from openlibrary.coverstore import config, db, ratelimit
+from PIL import Image, ImageDraw, ImageFont
+import textwrap
+
+
+from openlibrary.coverstore import config, db
 from openlibrary.coverstore.coverlib import read_file, read_image, save_image
 from openlibrary.coverstore.utils import (
     changequery,
@@ -253,17 +258,7 @@ class cover:
 
         if key == 'isbn':
             value = value.replace("-", "").strip()  # strip hyphens from ISBN
-            # Disabling ratelimit as iptables is taking care of botnets.
-            # value = self.ratelimit_query(category, key, value)
             value = self.query(category, key, value)
-
-            # Redirect isbn requests to archive.org.
-            # This will heavily reduce the load on coverstore server.
-            # The max_coveritem_index config parameter specifies the latest
-            # olcovers items uploaded to archive.org.
-            if value and self.is_cover_in_cluster(value):
-                url = zipview_url_from_id(int(value), size)
-                raise web.found(url)
         elif key == 'ia':
             url = self.get_ia_cover_url(value, size)
             if url:
@@ -273,15 +268,27 @@ class cover:
         elif key != 'id':
             value = self.query(category, key, value)
 
-        if value and safeint(value) in config.blocked_covers:
+        if not value or (value and safeint(value) in config.blocked_covers):
             raise web.notfound()
 
         # redirect to archive.org cluster for large size and original images whenever possible
-        if value and (size == "L" or size == "") and self.is_cover_in_cluster(value):
+        if size in ("L", "") and self.is_cover_in_cluster(value):
             url = zipview_url_from_id(int(value), size)
             raise web.found(url)
 
-        d = value and self.get_details(value, size.lower())
+        # covers_0008 partials [_00, _23] are tar'd in archive.org items
+        if isinstance(value, int) or value.isnumeric():
+            if 8240000 > int(value) >= 8000000:
+                prefix = f"{size.lower()}_" if size else ""
+                pid = "%010d" % int(value)
+                item_id = f"{prefix}covers_{pid[:4]}"
+                item_tar = f"{prefix}covers_{pid[:4]}_{pid[4:6]}.tar"
+                item_file = f"{pid}{'-' + size.upper() if size else ''}"
+                path = f"{item_id}/{item_tar}/{item_file}.jpg"
+                protocol = web.ctx.protocol
+                raise web.found(f"{protocol}://archive.org/download/{path}")
+
+        d = self.get_details(value, size.lower())
         if not d:
             return notfound()
 
@@ -379,8 +386,6 @@ class cover:
 
     def query(self, category, key, value):
         return _query(category, key, value)
-
-    ratelimit_query = ratelimit.ratelimit()(query)
 
 
 @web.memoize
@@ -512,3 +517,89 @@ class delete:
                 return 'cover has been deleted successfully.'
         else:
             return 'no such id: %s' % id
+
+
+def render_list_preview_image(lst_key):
+    """This function takes a list of five books and puts their covers in the correct
+    locations to create a new image for social-card"""
+    lst = web.ctx.site.get(lst_key)
+    five_seeds = lst.seeds[0:5]
+    background = Image.open(
+        "/openlibrary/static/images/Twitter_Social_Card_Background.png"
+    )
+
+    logo = Image.open("/openlibrary/static/images/Open_Library_logo.png")
+
+    W, H = background.size
+    image = []
+    for seed in five_seeds:
+        cover = seed.get_cover()
+
+        if cover:
+            response = requests.get(
+                f"https://covers.openlibrary.org/b/id/{cover.id}-M.jpg"
+            )
+            image_bytes = io.BytesIO(response.content)
+
+            img = Image.open(image_bytes)
+
+            basewidth = 162
+            wpercent = basewidth / float(img.size[0])
+            hsize = int(float(img.size[1]) * float(wpercent))
+            img = img.resize((basewidth, hsize), Image.ANTIALIAS)
+            image.append(img)
+    max_height = 0
+    for img in image:
+        if img.size[1] > max_height:
+            max_height = img.size[1]
+    if len(image) == 5:
+        background.paste(image[0], (63, 174 + max_height - image[0].size[1]))
+        background.paste(image[1], (247, 174 + max_height - image[1].size[1]))
+        background.paste(image[2], (431, 174 + max_height - image[2].size[1]))
+        background.paste(image[3], (615, 174 + max_height - image[3].size[1]))
+        background.paste(image[4], (799, 174 + max_height - image[4].size[1]))
+
+    elif len(image) == 4:
+        background.paste(image[0], (155, 174 + max_height - image[0].size[1]))
+        background.paste(image[1], (339, 174 + max_height - image[1].size[1]))
+        background.paste(image[2], (523, 174 + max_height - image[2].size[1]))
+        background.paste(image[3], (707, 174 + max_height - image[3].size[1]))
+
+    elif len(image) == 3:
+        background.paste(image[0], (247, 174 + max_height - image[0].size[1]))
+        background.paste(image[1], (431, 174 + max_height - image[1].size[1]))
+        background.paste(image[2], (615, 174 + max_height - image[2].size[1]))
+
+    elif len(image) == 2:
+        background.paste(image[0], (339, 174 + max_height - image[0].size[1]))
+        background.paste(image[1], (523, 174 + max_height - image[1].size[1]))
+
+    else:
+        background.paste(image[0], (431, 174 + max_height - image[0].size[1]))
+
+    logo = logo.resize((120, 74), Image.ANTIALIAS)
+    background.paste(logo, (880, 14), logo)
+
+    draw = ImageDraw.Draw(background)
+    font_author = ImageFont.truetype(
+        "/openlibrary/static/fonts/NotoSans-LightItalic.ttf", 22
+    )
+    font_title = ImageFont.truetype(
+        "/openlibrary/static/fonts/NotoSans-SemiBold.ttf", 28
+    )
+
+    para = textwrap.wrap(lst.name, width=45)
+    current_h = 42
+    author_text = f"A list by {lst.get_owner().displayname}"
+    w, h = draw.textsize(author_text, font=font_author)
+    draw.text(((W - w) / 2, current_h), author_text, font=font_author, fill=(0, 0, 0))
+    current_h += h + 5
+
+    for line in para:
+        w, h = draw.textsize(line, font=font_title)
+        draw.text(((W - w) / 2, current_h), line, font=font_title, fill=(0, 0, 0))
+        current_h += h
+
+    with io.BytesIO() as buf:
+        background.save(buf, format='PNG')
+        return buf.getvalue()

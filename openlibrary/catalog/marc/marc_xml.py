@@ -3,8 +3,6 @@ from unicodedata import normalize
 
 from openlibrary.catalog.marc.marc_base import MarcBase, MarcException
 
-import six
-
 data_tag = '{http://www.loc.gov/MARC21/slim}datafield'
 control_tag = '{http://www.loc.gov/MARC21/slim}controlfield'
 subfield_tag = '{http://www.loc.gov/MARC21/slim}subfield'
@@ -41,11 +39,16 @@ class DataField:
         self.element = element
 
     def remove_brackets(self):
-        f = self.element[0]
-        l = self.element[-1]
-        if f.text and l.text and f.text.startswith('[') and l.text.endswith(']'):
-            f.text = f.text[1:]
-            l.text = l.text[:-1]
+        first = self.element[0]
+        last = self.element[-1]
+        if (
+            first.text
+            and last.text
+            and first.text.startswith('[')
+            and last.text.endswith(']')
+        ):
+            first.text = first.text[1:]
+            last.text = last.text[:-1]
 
     def ind1(self):
         return self.element.attrib['ind1']

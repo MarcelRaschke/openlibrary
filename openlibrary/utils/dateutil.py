@@ -1,8 +1,13 @@
 """Generic date utilities.
 """
 
-import datetime
 import calendar
+import datetime
+from contextlib import contextmanager
+from sys import stderr
+from time import perf_counter
+
+from infogami.utils.view import public
 
 
 MINUTE_SECS = 60
@@ -16,6 +21,10 @@ WEEK_SECS = DAY_SECS * 7
 def days_in_current_month():
     now = datetime.datetime.now()
     return calendar.monthrange(now.year, now.month)[1]
+
+
+def todays_date_minus(**kwargs):
+    return datetime.date.today() - datetime.timedelta(**kwargs)
 
 
 def date_n_days_ago(n=None, start=None):
@@ -95,3 +104,25 @@ def _resize_list(x, size):
     """Increase the size of the list x to the specified size it is smaller."""
     if len(x) < size:
         x += [None] * (size - len(x))
+
+
+@public
+def current_year():
+    return datetime.datetime.now().year
+
+
+@contextmanager
+def elapsed_time(name="elapsed_time"):
+    """
+    Two ways to use elapsed_time():
+    1. As a decorator to time the execution of an entire function:
+        @elapsed_time("my_slow_function")
+        def my_slow_function(n=10_000_000):
+            pass
+    2. As a context manager to time the execution of a block of code inside a function:
+        with elapsed_time("my_slow_block_of_code"):
+            pass
+    """
+    start = perf_counter()
+    yield
+    print(f"Elapsed time ({name}): {perf_counter() - start:0.8} seconds", file=stderr)

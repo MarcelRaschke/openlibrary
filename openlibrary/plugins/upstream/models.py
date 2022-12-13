@@ -21,18 +21,17 @@ from openlibrary.core import lending
 from openlibrary.plugins.upstream.utils import MultiDict, parse_toc, get_edition_config
 from openlibrary.plugins.upstream import account
 from openlibrary.plugins.upstream import borrow
-from openlibrary.plugins.worksearch.code import works_by_author, sorted_work_editions
+from openlibrary.plugins.worksearch.code import works_by_author
 from openlibrary.plugins.worksearch.search import get_solr
 
 from openlibrary.utils import dateutil
 from openlibrary.utils.isbn import isbn_10_to_isbn_13, isbn_13_to_isbn_10
-
-import six
+from openlibrary.utils.lccn import normalize_lccn
 
 
 def follow_redirect(doc):
     if isinstance(doc, str) and doc.startswith("/a/"):
-        # Some edition records have authors as ["/a/OL1A""] insead of [{"key": "/a/OL1A"}].
+        # Some edition records have authors as ["/a/OL1A""] instead of [{"key": "/a/OL1A"}].
         # Hack to fix it temporarily.
         doc = web.ctx.site.get(doc.replace("/a/", "/authors/"))
 
@@ -62,38 +61,6 @@ class Edition(models.Edition):
         authors = [follow_redirect(a) for a in self.authors]
         authors = [a for a in authors if a and a.type.key == "/type/author"]
         return authors
-
-    def get_next(self):
-        """Next edition of work"""
-        if len(self.get('works', [])) != 1:
-            return
-        wkey = self.works[0].get_olid()
-        if not wkey:
-            return
-        editions = sorted_work_editions(wkey)
-        try:
-            i = editions.index(self.get_olid())
-        except ValueError:
-            return
-        if i + 1 == len(editions):
-            return
-        return editions[i + 1]
-
-    def get_prev(self):
-        """Previous edition of work"""
-        if len(self.get('works', [])) != 1:
-            return
-        wkey = self.works[0].get_olid()
-        if not wkey:
-            return
-        editions = sorted_work_editions(wkey)
-        try:
-            i = editions.index(self.get_olid())
-        except ValueError:
-            return
-        if i == 0:
-            return
-        return editions[i - 1]
 
     def get_covers(self):
         """
@@ -305,9 +272,9 @@ class Edition(models.Edition):
         if self.ocaid:
             lending.sync_loan(self.ocaid)
 
-    def _process_identifiers(self, config, names, values):
+    def _process_identifiers(self, config_, names, values):
         id_map = {}
-        for id in config:
+        for id in config_:
             id_map[id.name] = id
             id.setdefault("label", id.name)
             id.setdefault("url_format", None)
@@ -356,6 +323,8 @@ class Edition(models.Edition):
             if 'name' not in id or 'value' not in id:
                 continue
             name, value = id['name'], id['value']
+            if name == 'lccn':
+                value = normalize_lccn(value)
             d.setdefault(name, []).append(value)
 
         # clear existing value first
@@ -463,47 +432,41 @@ class Edition(models.Edition):
     @property
     def wp_citation_fields(self):
         """
-        Builds a wikipedia citation as defined by http://en.wikipedia.org/wiki/Template:Cite#Citing_books
+        Builds a Wikipedia book citation as defined by https://en.wikipedia.org/wiki/Template:Cite_book
         """
-        result = {
-            "title": self.title.replace("[", "&#91").replace("]", "&#93"),
-            "publication-date": self.get('publish_date'),
-            "ol": str(self.get_olid())[2:],
-        }
-
-        if self.ocaid:
-            result['url'] = "https://archive.org/details/" + self.ocaid
-
-        if self.lccn:
-            result['lccn'] = self.lccn[0]
-
-        if self.issn:
-            result['issn'] = self.issn[0]
-
-        if self.get('isbn_10'):
-            result['isbn'] = (
-                self['isbn_13'][0] if self.get('isbn_13') else self['isbn_10'][0]
-            )
-
-        if self.get('oclc_numbers'):
-            result['oclc'] = self.oclc_numbers[0]
-
-        if self.works[0].get('first_publish_year'):
-            result['origyear'] = self.works[0]['first_publish_year']
-
-        if self.get('publishers'):
-            result['publisher'] = self['publishers'][0]
-
-        if self.get('publish_places'):
-            result['publication-place'] = self['publish_places'][0]
-
+        citation = {}
         authors = [ar.author for ar in self.works[0].authors]
         if len(authors) == 1:
-            result['author'] = authors[0].name
+            citation['author'] = authors[0].name
         else:
             for i, a in enumerate(authors):
-                result['author%s' % (i + 1)] = a.name
-        return result
+                citation['author%s' % (i + 1)] = a.name
+
+        isbns = self.get('isbn_13', []) + self.get('isbn_10', [None])
+        citation.update(
+            {
+                'date': self.get('publish_date'),
+                'orig-date': self.works[0].get('first_publish_date'),
+                'title': self.title.replace("[", "&#91").replace("]", "&#93"),
+                'url': f'https://archive.org/details/{self.ocaid}'
+                if self.ocaid
+                else None,
+                'publication-place': self.get('publish_places', [None])[0],
+                'publisher': self.get('publishers', [None])[0],
+                'isbn': isbns[0],
+                'issn': self.get('identifiers', {}).get('issn', [None])[0],
+            }
+        )
+
+        if self.lccn:
+            citation['lccn'] = normalize_lccn(self.lccn[0])
+        if self.get('oclc_numbers'):
+            citation['oclc'] = self.oclc_numbers[0]
+        citation['ol'] = str(self.get_olid())[2:]
+        # TODO: add 'ol-access': 'free' if the item is free to read.
+        if citation['date'] == citation['orig-date']:
+            citation.pop('orig-date')
+        return citation
 
     def is_fake_record(self):
         """Returns True if this is a record is not a real record from database,
@@ -513,6 +476,14 @@ class Edition(models.Edition):
         created at runtime using the data from archive.org metadata API.
         """
         return "/ia:" in self.key
+
+    def set_provider_data(self, data):
+        if not self.providers:
+            self.providers = []
+        self.providers.append(data)
+
+    def set_providers(self, providers):
+        self.providers = providers
 
 
 class Author(models.Author):
@@ -544,6 +515,7 @@ class Author(models.Author):
             rows=i.rows,
             has_fulltext=i.mode == "ebooks",
             query=q,
+            facet=True,
         )
 
     def get_work_count(self):
@@ -603,7 +575,9 @@ class Work(models.Work):
     @cached_property
     def _solr_data(self):
         from openlibrary.book_providers import get_solr_keys
+
         fields = [
+            "key",
             "cover_edition_key",
             "cover_id",
             "edition_key",
@@ -705,13 +679,13 @@ class Work(models.Work):
     def get_related_books_subjects(self, filter_unicode=True):
         return self.filter_problematic_subjects(self.get_subjects(), filter_unicode)
 
-    def get_representative_edition(self):
+    def get_representative_edition(self) -> str | None:
         """When we have confidence we can direct patrons to the best edition
         of a work (for them), return qualifying edition key. Attempts
         to find best (most available) edition of work using
         archive.org work availability API. May be extended to support language
 
-        :rtype str: infogami edition key or url which resolves to an edition
+        :rtype str: infogami edition key or url which resolves to an edition or None
         """
         work_id = self.key.replace('/works/', '')
         availability = lending.get_work_availability(work_id)
@@ -719,22 +693,26 @@ class Work(models.Work):
             if 'openlibrary_edition' in availability[work_id]:
                 return '/books/%s' % availability[work_id]['openlibrary_edition']
 
-    def get_sorted_editions(self, ebooks_only=False, covers_only=False, limit=None, keys=None):
+        return None
+
+    def get_sorted_editions(
+        self,
+        ebooks_only: bool = False,
+        limit: int | None = None,
+        keys: list[str] | None = None,
+    ) -> list[Edition]:
         """
         Get this work's editions sorted by publication year
-        :param bool ebooks_only:
-        :param int limit:
         :param list[str] keys: ensure keys included in fetched editions
-        :rtype: list[Edition]
         """
-        edition_keys = keys or []
         db_query = {"type": "/type/edition", "works": self.key}
-        if limit:
-            db_query['limit'] = limit
+        db_query['limit'] = limit or 10000
 
+        edition_keys = []
         if ebooks_only:
             if self._solr_data:
                 from openlibrary.book_providers import get_book_providers
+
                 # Always use solr data whether it's up to date or not
                 # to determine which providers this book has
                 # We only make additional queries when a
@@ -744,10 +722,6 @@ class Work(models.Work):
                     edition_keys += web.ctx.site.things(query)
             else:
                 db_query["ocaid~"] = "*"
-        elif limit and covers_only:
-            # if we're going to be picky and there's no ebooks
-            # try to favor editions with covers
-            db_query["covers_i~"] = "*"
 
         if not edition_keys:
             solr_is_up_to_date = (
@@ -763,6 +737,7 @@ class Work(models.Work):
                 # given librarians are probably doing this, show all editions
                 edition_keys += web.ctx.site.things(db_query)
 
+        edition_keys.extend(keys or [])
         editions = web.ctx.site.get_many(list(set(edition_keys)))
         editions.sort(
             key=lambda ed: ed.get_publish_year() or -sys.maxsize, reverse=True

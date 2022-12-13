@@ -6,7 +6,7 @@ import web
 from infogami import config
 from openlibrary.core.lending import get_availability_of_ocaids
 from openlibrary.plugins.openlibrary.home import format_book_data
-from six.moves.urllib.parse import urlencode
+from urllib.parse import urlencode
 
 logger = logging.getLogger("openlibrary.inside")
 
@@ -28,11 +28,16 @@ def fulltext_search_api(params):
         return {'error': 'Error converting search engine data to JSON'}
 
 
-def fulltext_search(q, page=1, limit=100, js=False):
+def fulltext_search(q, page=1, limit=100, js=False, facets=False):
     offset = (page - 1) * limit
-    ia_results = fulltext_search_api(
-        {'q': q, 'from': offset, 'size': limit, 'olonly': 'true'}
-    )
+    params = {
+        'q': q,
+        'from': offset,
+        'size': limit,
+        **({'nofacets': 'true'} if not facets else {}),
+        'olonly': 'true',
+    }
+    ia_results = fulltext_search_api(params)
 
     if 'error' not in ia_results and ia_results['hits']:
         hits = ia_results['hits'].get('hits', [])
